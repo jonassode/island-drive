@@ -1,0 +1,22 @@
+{
+  "name": "car-game",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Small web game: a procedurally generated 3D island you can drive a car around with the arrow keys.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1"
+  }
+}
