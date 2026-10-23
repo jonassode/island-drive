@@ -81,7 +81,7 @@ it on Render's **free** web service plan, and two GitHub Actions workflows publi
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | pull request | `npm test`, `npm run build`, then `npm run smoke` in headless Chrome against `vite preview` |
+| `.github/workflows/ci.yml` | pull request | `npm test`, `npm run build`, then `npm run smoke` in headless Chrome against `vite preview` (advisory — see below) |
 | `.github/workflows/deploy.yml` | push to `main` | runs the CI workflow, then POSTs the Render deploy hook |
 
 One-time setup:
@@ -107,6 +107,12 @@ Worth knowing before pointing people at it:
 - **If a full room ever outruns the free instance**, the server reads `TICK_RATE` (Hz, 10-60) and
   `MAX_ROOMS` from the environment. Clients adopt the rate from the server's `welcome`, so
   lowering it costs nothing but a redeploy — see the commented-out `envVars` in `render.yaml`.
+- **The CI smoke run is advisory, on purpose.** GitHub's runners have no GPU, so the software
+  rasterizer draws this island at well under one frame per second; the checks that hold a key
+  down and wait in real time then see the car creep, because the game caps how far a frame may
+  catch up (`MAX_STEPS_PER_FRAME`). The checks that step the simulation directly report exactly
+  as they do locally, so the run is still worth reading — but `npm test`, the build and a local
+  `npm run smoke` are what actually decide whether a change is good.
 - **Static hosting works too** (Cloudflare Pages, GitHub Pages, S3, …): `dist/` is a plain static
   site, `vite.config.js` sets `base: './'` so it runs from a sub-path, and a page whose socket
   never connects simply plays alone. Multiplayer is the only thing given up.
