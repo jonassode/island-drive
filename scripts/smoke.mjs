@@ -12,13 +12,14 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { ISLAND, WORLD } from '../src/config.js';
+import { ISLAND, PATH, WORLD } from '../src/config.js';
 
 const URL_BASE = process.env.SMOKE_URL ?? 'http://localhost:4173';
 const DEBUG_PORT = Number( process.env.SMOKE_PORT ?? 9333 );
 const SCREENSHOT = process.env.SMOKE_SCREENSHOT ?? '/tmp/car-game-smoke.png';
 const CAR_SHOT = process.env.SMOKE_CAR_SCREENSHOT ?? '/tmp/car-game-car.png';
 const ISLAND_SHOT = process.env.SMOKE_ISLAND_SCREENSHOT ?? '/tmp/car-game-island.png';
+const PATH_SHOT = process.env.SMOKE_PATH_SCREENSHOT ?? '/tmp/car-game-path.png';
 const PROFILE = '/tmp/car-game-chrome-profile';
 
 const CHROME_CANDIDATES = [
@@ -253,6 +254,91 @@ async function open( devtools, url ) {
 
 }
 
+/**
+ * Opens a second tab, and connects a DevTools client to it.
+ *
+ * The room checks need two players at once, and a second page is the most honest way to get
+ * them: two real clients, two real sockets, one room.
+ *
+ * @param {Devtools} devtools Client on the existing page, used to ask the browser for a tab.
+ * @param {string} url URL to open.
+ * @returns {Promise<{ client: Devtools, targetId: string }>} The new page.
+ */
+async function openExtraPage( devtools, url ) {
+
+	const created = await devtools.send( 'Target.createTarget', { url } );
+
+	for ( let attempt = 0; attempt < 100; attempt ++ ) {
+
+		const response = await fetch( `http://127.0.0.1:${DEBUG_PORT}/json/list` );
+		const targets = await response.json();
+		const target = targets.find( ( candidate ) => candidate.id === created.targetId );
+
+		if ( target !== undefined && target.webSocketDebuggerUrl !== undefined ) {
+
+			const client = await Devtools.connect( target.webSocketDebuggerUrl );
+
+			await waitForGame( client );
+			await sleep( 700 );
+
+			return { client, targetId: created.targetId };
+
+		}
+
+		await sleep( 100 );
+
+	}
+
+	throw new Error( 'the second page never appeared' );
+
+}
+
+/** Expression that waits for the socket to come up, and reports the room it landed in. */
+const JOIN_EXPRESSION = `(async () => {
+	const game = window.__carGame;
+	for ( let i = 0; i < 100 && game.online === false; i ++ ) {
+		await new Promise( ( resolve ) => setTimeout( resolve, 100 ) );
+	}
+	return {
+		solo: game.solo,
+		online: game.online,
+		room: game.room,
+		seed: game.field.seed,
+		selfId: game.selfId,
+		roster: game.roster.map( ( player ) => ( {
+			id: player.id, name: player.name, color: player.color, host: player.host,
+		} ) ),
+	};
+})()`;
+
+/** Expression describing what a page makes of the other cars in its room. */
+const REMOTE_VIEW_EXPRESSION = `(() => {
+	const game = window.__carGame;
+	const others = game.roster.filter( ( player ) => player.id !== game.selfId );
+	const other = others[ 0 ];
+	const car = other === undefined ? null : game.scene.getObjectByName( 'car-' + other.id );
+	return {
+		remotes: game.remoteCars.count,
+		hasTag: car !== null && car.getObjectByName( 'name-tag' ) !== undefined,
+		x: car === null ? null : car.position.x,
+		y: car === null ? null : car.position.y,
+		z: car === null ? null : car.position.z,
+		slot: other === undefined ? null : other.spawn,
+	};
+})()`;
+
+/** Expression describing where this page's own car is. */
+const MINE_EXPRESSION = `( ( () => {
+	const game = window.__carGame;
+	return {
+		x: game.car.group.position.x,
+		y: game.car.group.position.y,
+		z: game.car.group.position.z,
+		speed: game.state.speed,
+		hud: document.getElementById( 'connection' ).textContent,
+	};
+} )() )`;
+
 async function main() {
 
 	const chromePath = CHROME_CANDIDATES.find( ( candidate ) => existsSync( candidate ) );
@@ -319,11 +405,11 @@ async function main() {
 		} );
 
 		// ---- requirement 1: a brand new island on every load -------------------------
-		await open( devtools, `${URL_BASE}/?seed=1` );
+		await open( devtools, `${URL_BASE}/?seed=1&solo=1` );
 		const firstSignature = await devtools.evaluate( SIGNATURE_EXPRESSION );
 		const firstSeed = await devtools.evaluate( 'window.__carGame.field.seed' );
 
-		await open( devtools, `${URL_BASE}/?seed=2` );
+		await open( devtools, `${URL_BASE}/?seed=2&solo=1` );
 		const secondSignature = await devtools.evaluate( SIGNATURE_EXPRESSION );
 
 		check( 'loads without console errors', consoleErrors.length === 0, consoleErrors.join( ' | ' ) );
@@ -473,6 +559,98 @@ async function main() {
 		check( 'the island is wooded', world.trees > 1000, `${world.trees} trees` );
 		check( 'land is drivable hundreds of units from the centre', world.drivable === true, '' );
 
+		// ---- a dirt path loops around the island -------------------------------------
+		// Same approach as the terrain checks above: how far out the loop runs, whether it
+		// stays on land, whether it actually closes, and whether the ribbon is still lying on
+		// the ground under it are all read back as numbers from the live page.
+		const trail = await devtools.evaluate( `(() => {
+			const game = window.__carGame;
+			const field = game.field;
+			const pathField = game.pathField;
+			const points = pathField.points;
+
+			let minRadius = Infinity;
+			let maxRadius = 0;
+			let minHeight = Infinity;
+			let maxHeight = - Infinity;
+			let minWaterGap = Infinity;
+			let offLand = 0;
+
+			for (const point of points) {
+				const cos = Math.cos(point.angle);
+				const sin = Math.sin(point.angle);
+				const outward = point.radius + point.width;
+
+				minRadius = Math.min(minRadius, point.radius);
+				maxRadius = Math.max(maxRadius, point.radius);
+
+				const height = field.heightAt(point.x, point.z);
+				minHeight = Math.min(minHeight, height);
+				maxHeight = Math.max(maxHeight, height);
+
+				// Both edges of the tread, not just the centreline, must be dry land.
+				if (field.isLand(point.x + cos * point.width, point.z + sin * point.width) === false) offLand++;
+				if (field.isLand(point.x - cos * point.width, point.z - sin * point.width) === false) offLand++;
+
+				// Dry land between the path and the water, measured radially outwards.
+				for (let r = outward; r < field.radius * 1.1; r += 4) {
+					if (field.isLand(cos * r, sin * r) === false) {
+						minWaterGap = Math.min(minWaterGap, r - outward);
+						break;
+					}
+				}
+			}
+
+			// Station spacing, and the step that closes the loop.
+			let total = 0;
+			let closing = 0;
+			for (let i = 0; i < points.length; i++) {
+				const a = points[i];
+				const b = points[(i + 1) % points.length];
+				const step = Math.hypot(b.x - a.x, b.z - a.z);
+				if (i === points.length - 1) closing = step;
+				else total += step;
+			}
+
+			// Every ribbon vertex must sit just above the terrain it samples.
+			const position = game.path.mesh.geometry.attributes.position;
+			let minLift = Infinity;
+			let maxLift = - Infinity;
+			for (let i = 0; i < position.count; i++) {
+				const lift = position.getY(i) - field.heightAt(position.getX(i), position.getZ(i));
+				minLift = Math.min(minLift, lift);
+				maxLift = Math.max(maxLift, lift);
+			}
+
+			return {
+				stations: points.length,
+				length: pathField.length,
+				loops: game.path.mesh.geometry.index.count / 3,
+				fractionRange: [minRadius / field.radius, maxRadius / field.radius],
+				heightRange: maxHeight - minHeight,
+				minWaterGap,
+				offLand,
+				closingRatio: closing / (total / (points.length - 1)),
+				minLift,
+				maxLift,
+			};
+		})()` );
+
+		check( 'a single dirt path loops around the island, clear of the water',
+			trail.stations > 100 && trail.fractionRange[ 0 ] > 0.5 && trail.fractionRange[ 1 ] < 0.68 &&
+			trail.offLand === 0 && trail.minWaterGap > 40 &&
+			trail.closingRatio > 0.5 && trail.closingRatio < 1.5,
+			`${trail.stations} stations over a ${Math.round( trail.length )} u lap at ` +
+			`${trail.fractionRange[ 0 ].toFixed( 2 )}-${trail.fractionRange[ 1 ].toFixed( 2 )} of the island radius, ` +
+			`${Math.round( trail.minWaterGap )} u of land outside it, ${trail.offLand} edge samples off land, ` +
+			`closing step ${( trail.closingRatio * 100 ).toFixed( 0 )}% of a normal one` );
+
+		check( 'the path is laid on the terrain and climbs the hills with it',
+			trail.minLift > 0.05 && trail.maxLift < PATH.lift + PATH.crown + 0.2 &&
+			trail.heightRange > 15 && trail.loops > 1000,
+			`ribbon ${trail.minLift.toFixed( 2 )}-${trail.maxLift.toFixed( 2 )} u above the height field in ` +
+			`${trail.loops} triangles, terrain height range along the loop ${trail.heightRange.toFixed( 1 )} u` );
+
 		// ---- a fast car flies off the crests -----------------------------------------
 		// Stepped manually so this is deterministic: no rendering, no timing luck. The seeds
 		// are loaded explicitly because the page generates a random island by default, which
@@ -485,7 +663,7 @@ async function main() {
 
 		for ( const seed of flightSeeds ) {
 
-			await open( devtools, `${URL_BASE}/?seed=${seed}` );
+			await open( devtools, `${URL_BASE}/?seed=${seed}&solo=1` );
 
 			const run = await devtools.evaluate( `(() => {
 			const game = window.__carGame;
@@ -740,8 +918,98 @@ async function main() {
 			afterR.seed !== beforeR.seed && afterR.signature !== beforeR.signature && afterR.onLand === true,
 			`seed ${beforeR.seed} -> ${afterR.seed}` );
 
+		// ---- multiplayer: two players, one island --------------------------------------
+		await open( devtools, `${URL_BASE}/?solo=1` );
+
+		const solo = await devtools.evaluate( `( {
+			solo: window.__carGame.solo,
+			net: window.__carGame.net,
+			online: window.__carGame.online,
+			remotes: window.__carGame.remoteCars.count,
+		} )` );
+
+		check( 'without a room the page plays alone, with no socket',
+			solo.solo === true && solo.net === null && solo.online === false && solo.remotes === 0,
+			`net ${solo.net === null ? 'closed' : 'open'}` );
+
+		const roomName = 'smoke';
+		await open( devtools, `${URL_BASE}/?room=${roomName}&name=Ana` );
+		const ana = await devtools.evaluate( JOIN_EXPRESSION );
+
+		check( 'a page joins its room and is told the island and the roster',
+			ana.online === true && ana.room === roomName && ana.roster.length === 1 &&
+				ana.roster[ 0 ].host === true && typeof ana.roster[ 0 ].color === 'number',
+			`room ${ana.room}, seed ${ana.seed}` );
+
+		// A second page, on the same room: it must land on the *same* island, not one of its own.
+		const bo = await openExtraPage( devtools, `${URL_BASE}/?room=${roomName}&name=Bo` );
+		const boView = await bo.client.evaluate( JOIN_EXPRESSION );
+
+		const sameIsland = boView.seed === ana.seed && boView.room === roomName;
+		const bothSeeTwo = boView.roster.length === 2;
+		const distinctColors = new Set( boView.roster.map( ( player ) => player.color ) ).size === 2;
+		const oneHost = boView.roster.filter( ( player ) => player.host ).length === 1;
+
+		check( 'a second player joins the same island', sameIsland, `seeds ${ana.seed} / ${boView.seed}` );
+		check( 'both players are on the roster', bothSeeTwo && ana.roster.length + 1 === boView.roster.length,
+			`${ana.roster.length} + 1 vs ${boView.roster.length}` );
+		check( 'each player gets their own colour', distinctColors,
+			boView.roster.map( ( player ) => player.color.toString( 16 ) ).join( ', ' ) );
+		check( 'exactly one player is the host', oneHost );
+
+		// The colour the room picked has to reach the car the player is actually driving.
+		const paints = await devtools.evaluate( `( () => {
+			const game = window.__carGame;
+			const me = game.roster.find( ( player ) => player.id === game.selfId );
+			// The first chassis part is the hull, which carries the paint.
+			return { roster: me.color, hull: game.car.chassis.children[ 0 ].material.color.getHex() };
+		} )()` );
+
+		check( 'the local car is painted the colour the room gave it',
+			paints.roster === paints.hull,
+			`roster ${paints.roster.toString( 16 )} vs hull ${paints.hull.toString( 16 )}` );
+
+		// Ana's page should now hold one other car — with a name tag — parked on Bo's slot.
+		const anaRemote = await devtools.evaluate( REMOTE_VIEW_EXPRESSION );
+
+		check( 'the other player has a car in the world, tagged with their name',
+			anaRemote.remotes === 1 && anaRemote.hasTag === true,
+			`${anaRemote.remotes} remote car(s), tag ${anaRemote.hasTag}` );
+
+		// Driving has to show up on the *other* machine: that is the whole feature. The tab that
+		// is in front is the only one still drawing — Chrome stops animating a background tab —
+		// so Bo drives, and Ana is brought back to the front to be read.
+		await bo.client.send( 'Page.bringToFront' );
+		await dispatchKey( bo.client, 'ArrowUp', 'rawKeyDown' );
+		await sleep( 2500 );
+		await dispatchKey( bo.client, 'ArrowUp', 'keyUp' );
+
+		const boCar = await bo.client.evaluate( MINE_EXPRESSION );
+
+		await devtools.send( 'Page.bringToFront' );
+		await sleep( 700 );
+
+		const anaView = await devtools.evaluate( REMOTE_VIEW_EXPRESSION );
+		const slot = anaView.slot;
+		const remoteFromSlot = slot === null || anaView.x === null
+			? 0
+			: Math.hypot( anaView.x - slot.x, anaView.z - slot.z );
+		const seen = anaView.x === null
+			? Infinity
+			: Math.hypot( boCar.x - anaView.x, boCar.y - anaView.y, boCar.z - anaView.z );
+
+		check( 'the driver really drove on their own machine',
+			boCar.speed > 1 && boCar.hud.includes( '2 players' ),
+			`${boCar.speed.toFixed( 1 )} u/s, hud "${boCar.hud}"` );
+
+		check( 'the other player sees the car moving, where the driver has it',
+			seen < 12 && remoteFromSlot > 5,
+			`${seen.toFixed( 2 )} u apart, ${remoteFromSlot.toFixed( 2 )} u from its slot` );
+
+		await devtools.send( 'Target.closeTarget', { targetId: bo.targetId } );
+
 		// ---- visual artefact -----------------------------------------------------------
-		await open( devtools, `${URL_BASE}/?seed=7` );
+		await open( devtools, `${URL_BASE}/?seed=7&solo=1` );
 		await dispatchKey( devtools, 'ArrowUp', 'rawKeyDown' );
 		await sleep( 1600 );
 		await dispatchKey( devtools, 'ArrowUp', 'keyUp' );
@@ -766,6 +1034,29 @@ async function main() {
 		const closeup = await devtools.send( 'Page.captureScreenshot', { format: 'png' } );
 		writeFileSync( CAR_SHOT, Buffer.from( closeup.data, 'base64' ) );
 		console.log( `car close-up: ${CAR_SHOT}` );
+
+		// The dirt path at head height, looking along it from just inside the loop: the view
+		// the player gets when they are driving it, rather than a line on a map.
+		await devtools.evaluate( `(() => {
+			const game = window.__carGame;
+			const pathField = game.pathField;
+			const field = game.field;
+			game.renderer.setAnimationLoop( null );
+
+			const point = pathField.points[ 0 ];
+			const cos = Math.cos( point.angle );
+			const sin = Math.sin( point.angle );
+			const x = point.x - cos * 17;
+			const z = point.z - sin * 17;
+
+			game.camera.position.set( x, field.heightAt( x, z ) + 5.5, z );
+			game.camera.lookAt( point.x, field.heightAt( point.x, point.z ) + 0.5, point.z );
+			game.renderer.render( game.scene, game.camera );
+		})()` );
+
+		const trailShot = await devtools.send( 'Page.captureScreenshot', { format: 'png' } );
+		writeFileSync( PATH_SHOT, Buffer.from( trailShot.data, 'base64' ) );
+		console.log( `path close-up: ${PATH_SHOT}` );
 
 		// Whole island from above. At the new scale that means standing well back: the island is
 		// roughly 1700 units across while the ocean plane is 7000, so the fog is pushed out

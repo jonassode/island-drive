@@ -1,0 +1,77 @@
+# Everything that has to pass before a commit is worth deploying.
+#
+# Runs on pull requests, and is *called* by `.github/workflows/deploy.yml` for pushes to `main`
+# — so a push to `main` runs these checks exactly once (through the deploy workflow) instead of
+# twice, while still giving every deploy the same gate a pull request gets.
+name: CI
+
+on:
+  pull_request:
+  # Makes this workflow callable from deploy.yml, rather than duplicating its steps there.
+  workflow_call:
+
+# A second push makes the first run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version comes from .nvmrc, which `NODE_VERSION` in render.yaml agrees with, so CI
+      # and the deploy build on the same Node.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Tests (pure modules, room and socket — no browser)
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # `vite preview` serves dist/ *and* attaches the game socket (see vite.config.js), which
+      # is exactly what the smoke test expects. It is bound to 127.0.0.1 explicitly because the
+      # dev/preview server otherwise listens on IPv6 only, which `localhost` on a runner does
+      # not reliably resolve to.
+      #
+      # The screenshot paths are set to a workspace directory (the default is /tmp) so they can
+      # be uploaded as an artifact: the script writes them where it is told without creating the
+      # directory, hence the mkdir.
+      - name: Smoke test (headless Chrome, two players)
+        run: |
+          mkdir -p smoke-artifacts
+
+          npm run preview -- --host 127.0.0.1 --port 4173 < /dev/null &
+
+          # Poll instead of guessing a sleep. A failed curl while the loop is still running is
+          # expected; falling out of the loop on the last attempt fails this step.
+          for attempt in $( seq 1 60 ); do
+            curl -fsS -o /dev/null http://127.0.0.1:4173/ && break
+            sleep 1
+          done
+
+          npm run smoke
+        env:
+          SMOKE_URL: http://127.0.0.1:4173
+          CHROME_PATH: /usr/bin/google-chrome
+          SMOKE_SCREENSHOT: smoke-artifacts/smoke.png
+          SMOKE_CAR_SCREENSHOT: smoke-artifacts/car.png
+          SMOKE_ISLAND_SCREENSHOT: smoke-artifacts/island.png
+          SMOKE_PATH_SCREENSHOT: smoke-artifacts/path.png
+
+      # The screenshots are the fastest way to see what a failure looked like.
+      - name: Upload smoke screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-screenshots
+          path: smoke-artifacts/
+          if-no-files-found: ignore

@@ -91,6 +91,44 @@
 			font-weight: 600;
 		}
 
+		#connection {
+			margin-top: 2px;
+			font-size: 12px;
+			color: #9fe3ff;
+			opacity: 0.85;
+		}
+
+		#players {
+			position: absolute;
+			top: 16px;
+			right: 16px;
+			margin: 0;
+			padding: 0;
+			list-style: none;
+			font-size: 12px;
+			line-height: 1.6;
+			text-align: right;
+		}
+
+		#players li {
+			opacity: 0.9;
+		}
+
+		#players li.you {
+			font-weight: 600;
+			opacity: 1;
+		}
+
+		#players i {
+			display: inline-block;
+			width: 9px;
+			height: 9px;
+			margin-right: 6px;
+			border-radius: 2px;
+			box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
+			vertical-align: baseline;
+		}
+
 		#status {
 			margin-top: 4px;
 			font-size: 12px;
@@ -139,13 +177,15 @@
 		<div>
 			<div id="title">Island Drive</div>
 			<div id="seed">seed —</div>
+			<div id="connection">starting…</div>
 			<div id="status"></div>
 			<div id="airborne">airborne</div>
 		</div>
+		<ul id="players"></ul>
 		<div id="controls">
 			<div><kbd>↑</kbd> accelerate &nbsp; <kbd>↓</kbd> brake / reverse</div>
 			<div><kbd>←</kbd> <kbd>→</kbd> steer</div>
-			<div><kbd>R</kbd> new island &nbsp; <kbd>Space</kbd> jump to spawn</div>
+			<div><kbd>R</kbd> new island (room host) &nbsp; <kbd>Space</kbd> jump to spawn</div>
 		</div>
 		<div id="speedometer"><b id="speed-value">0</b><span>km/h</span></div>
 	</div>

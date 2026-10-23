@@ -3,3 +3,5 @@ dist/
 .DS_Store
 *.local
 npm-debug.log*
+# Written by the CI smoke run (see .github/workflows/ci.yml).
+smoke-artifacts/

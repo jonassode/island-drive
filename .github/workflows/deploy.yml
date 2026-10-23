@@ -1,0 +1,57 @@
+# Publishes `main` to Render, but only once CI has passed.
+#
+# Render's own auto-deploy is switched off in `render.yaml`, so this workflow is the single route
+# a change takes to production: the tests, then the service's deploy hook. Render clones the
+# commit and runs the Blueprint's build and start commands itself, so nothing here has to build
+# or ship the bundle.
+name: Deploy
+
+on:
+  push:
+    branches: [ main ]
+  # So a deploy can be re-triggered by hand, e.g. after a Render-side incident.
+  workflow_dispatch:
+
+# Two deploys of one service must never overlap.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  # Exactly the checks a pull request gets: `npm test`, the production build, and the
+  # headless-Chrome smoke run against the built bundle.
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      # A missing secret is worth its own message: the deploy hook is created in the Render
+      # dashboard and cannot be committed.
+      - name: Trigger the Render deploy
+        run: |
+          if [ -z "${RENDER_DEPLOY_HOOK_URL}" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL is empty. Add the service's deploy hook URL as a" >&2
+            echo "repository secret: Settings -> Secrets and variables -> Actions." >&2
+            exit 1
+          fi
+
+          curl -fsS -X POST "${RENDER_DEPLOY_HOOK_URL}"
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+
+      # The deploy hook returns as soon as the build is queued, so the run cannot report whether
+      # the service came up. Say so, and how to check.
+      - name: Deployment summary
+        run: |
+          {
+            echo "### Deploy triggered"
+            echo ""
+            echo "Render is building \`${GITHUB_SHA}\`. Watch it in the Render dashboard, then"
+            echo "verify the live game end to end with:"
+            echo ""
+            echo '```bash'
+            echo "SMOKE_URL=https://<your-service>.onrender.com npm run smoke"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"

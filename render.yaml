@@ -1,0 +1,48 @@
+# Render Blueprint: one free web service that serves the game and its socket.
+#
+# `npm start` runs `server/index.js`, which serves `dist/` and attaches the multiplayer socket
+# to the same port, so one service and one port are all a deployment needs.
+#
+# `numInstances: 1` is a correctness requirement, not a cost choice: rooms live in a Map inside
+# the process (`server/socketServer.js`), so a second instance would hold its own island under
+# the same room id and split the players between them. A free instance cannot scale past one
+# instance anyway.
+#
+# Deploys are published by `.github/workflows/deploy.yml` after CI passes, so Render's own push
+# hook is off (`autoDeployTrigger`). The value is quoted because YAML would otherwise read the
+# bare word `off` as a boolean.
+services:
+  - type: web
+    name: island-drive
+    runtime: node
+    # Free compute: 0.1 CPU / 512 MB. Plenty for a 60 Hz loop per room; the cost is the ~1
+    # minute cold start after 15 minutes without traffic (see the README's Deploy section).
+    plan: free
+    # Nearest of oregon (default), ohio, virginia, frankfurt, singapore.
+    region: frankfurt
+    numInstances: 1
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    # Answered by the server without touching `dist/`, so a health check never depends on the
+    # build having produced a bundle yet.
+    healthCheckPath: /healthz
+    # 60s, up from the 30s default, so a redeploy can close its WebSockets and exit politely
+    # (the server handles SIGTERM).
+    maxShutdownDelaySeconds: 60
+    autoDeployTrigger: 'off'
+    envVars:
+      # Render's Node runtime already defaults to production; this makes it explicit.
+      - key: NODE_ENV
+        value: production
+      # Highest-precedence pin for the build's Node version (`.nvmrc` agrees with it). Vite 8
+      # requires ^20.19.0 || >=22.12.0.
+      - key: NODE_VERSION
+        value: 22.23.3
+      # Optional levers, uncomment if a full room ever outruns the free instance. The server
+      # simulates at TICK_RATE and every client adopts it from the `welcome` message, so
+      # lowering it costs no rebuild. 60 is the rate the physics was tuned at; 30 is playable.
+      # - key: TICK_RATE
+      #   value: '30'
+      # Each room holds an island in memory, so this is the knob that bounds the process.
+      # - key: MAX_ROOMS
+      #   value: '16'

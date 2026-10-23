@@ -73,7 +73,7 @@ function stateFromSpawn( heightField, spawn ) {
 		x: spawn.x,
 		z: spawn.z,
 		y,
-		heading: 0,
+		heading: spawn.heading ?? 0,
 		speed: 0,
 		steerAngle: 0,
 		verticalSpeed: 0,
@@ -95,14 +95,16 @@ function stateFromSpawn( heightField, spawn ) {
 }
 
 /**
- * Creates a car state at the height field's recommended spawn point.
+ * Creates a car state at a spawn point.
  *
  * @param {object} heightField The terrain the car will drive on.
+ * @param {object} [spawn] Spawn point to use. Defaults to the terrain's own recommended
+ *   one; a room hands each player a different slot so they do not start inside each other.
  * @returns {object} A fresh car state.
  */
-export function createCarState( heightField ) {
+export function createCarState( heightField, spawn ) {
 
-	return stateFromSpawn( heightField, heightField.findSpawnPoint() );
+	return stateFromSpawn( heightField, spawn ?? heightField.findSpawnPoint() );
 
 }
 
@@ -111,14 +113,15 @@ export function createCarState( heightField ) {
  *
  * @param {object} state Car state to mutate.
  * @param {object} heightField The terrain to spawn on.
+ * @param {object} [spawn] Spawn point to use, in place of the terrain's own.
  * @returns {object} The same state object.
  */
-export function resetCar( state, heightField ) {
+export function resetCar( state, heightField, spawn ) {
 
-	const spawn = heightField.findSpawnPoint();
-	state.spawn = spawn;
+	const target = spawn ?? heightField.findSpawnPoint();
+	state.spawn = target;
 
-	return placeAt( state, heightField, spawn.x, spawn.z, 0 );
+	return placeAt( state, heightField, target.x, target.z, target.heading ?? 0 );
 
 }
 

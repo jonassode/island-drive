@@ -117,8 +117,25 @@ export const CAR = {
 	airGravity: 60,
 	/** Fraction of the speed kept when landing. */
 	landingDamping: 0.94,
-	/** Steepest ground tilt the car will adopt, in radians (~35 deg). */
-	maxTilt: 0.61,
+	/** Steepest the body may ever be tilted away from horizontal, in radians (~60 deg).
+	 *
+	 * A rollover guard, not a limit on the hills. Measured over four seeds, the steepest
+	 * drivable ground on these islands is ~52 deg (see `hillMaxGrade` and the detail noise),
+	 * so this has to stay comfortably above that: at the old 35 deg the cap engaged on ~100%
+	 * of the frames the car spent on ground steeper than 35 deg, and the body was left propped
+	 * up at a compromise angle that matched neither the hill nor the horizon. At this value it
+	 * is inert on all four of those seeds -- 0% of ~62,000 samples -- and only a cliff or a
+	 * freak fit can ever reach it. */
+	maxTilt: 1.05,
+	/** How far the body may lean away from the ground *under it*, in radians (~26 deg).
+	 *
+	 * Measured against the terrain's own normal, so it never fights an honest hillside -- only
+	 * a fit that genuinely disagrees with the landscape, which means a cliff edge, a rock or a
+	 * bump narrower than the wheelbase. This is what stops those from rolling the car over; it
+	 * is deliberately loose, since the wheels already average the ground over 2.8 x 2 u, and on
+	 * the same four seeds it fired on 0% of ~62,000 samples. When it does fire it moves the
+	 * body *towards* the ground under it, never away from it. */
+	maxTiltDeviation: 0.45,
 	/** How quickly the tilt returns to level while airborne (per second). */
 	airLevelRate: 2.5,
 	/** How far each wheel may extend or compress independently, so a rigid body can still
@@ -161,6 +178,69 @@ export const CAR = {
 	airSteerAuthority: 0.25,
 	/** How far the car sinks into the water, in world units. */
 	waterSink: 0.7,
+};
+
+export const MULTIPLAYER = {
+	/** Simulation frequency of the server, and of the fixed step the client predicts at.
+	 *
+	 * Both sides must use the *same* step for client side prediction to reproduce the
+	 * server's result exactly, which is why the client no longer simulates at the frame
+	 * rate: it accumulates real time and steps this fixed amount. */
+	tickRate: 60,
+	/** How often the server broadcasts a snapshot of every car, in Hz. */
+	snapshotRate: 20,
+	/** How far behind the newest snapshot remote cars are drawn, in milliseconds.
+	 *
+	 * Received snapshots are buffered and played back this much later, so there are always
+	 * two snapshots to interpolate between even when one arrival is delayed. */
+	interpDelayMs: 120,
+	/** Client ticks whose inputs are batched into one message, and the hard cap on how many
+	 * an incoming message may carry (a longer burst is truncated rather than applied at once). */
+	inputBatch: 3,
+	maxInputsPerMessage: 8,
+	/** Predicted ticks that may be kept for replay. Beyond this the client stops predicting
+	 * and simply follows the server, instead of replaying hundreds of steps every snapshot. */
+	replayMaxTicks: 120,
+	/** Distance between the predicted car and the corrected one that snaps instead of being
+	 * smoothed away, in world units. */
+	snapDistance: 4,
+	/** How quickly a correction is smoothed out, per second (exponential decay). */
+	errorDecay: 8,
+	/** Players per room. Also the size of the car colour palette, so every player in a room
+	 * can hold a distinct colour. */
+	maxPlayers: 8,
+	/** Spawn slots are laid out on rings of this radius, at the golden angle, up to
+	 * `spawnMaxRadius` from the island's own spawn point. */
+	spawnRingRadius: 6,
+	spawnMaxRadius: 30,
+	/** Default room. A room exists only while somebody is in it; nothing is persisted. */
+	room: 'island',
+	/** Longest accepted display name, in characters. */
+	nameMaxLength: 16,
+	/** Car paints handed out at random, one per player per room. Chosen to stay apart in hue
+	 * *and* in luminance, so they are still telling apart at a distance and in shadow. */
+	colors: [
+		0xd93b2b, // red (the single player paint)
+		0x2f6fd0, // blue
+		0xf2c230, // yellow
+		0x36a852, // green
+		0xe8762b, // orange
+		0x8a4fd0, // purple
+		0x2fc4d0, // cyan
+		0xe8eef5, // white
+	],
+	/** Client: how long a snapshot stream may go quiet before the link is treated as lost,
+	 * and the reconnect backoff bounds, in milliseconds. */
+	staleMs: 3000,
+	reconnectMinMs: 500,
+	reconnectMaxMs: 8000,
+	/** Server: ping period, and how long a socket may stay silent before it is dropped. */
+	heartbeatMs: 5000,
+	heartbeatTimeoutMs: 15000,
+	/** Server: the path the game socket lives on, so it never collides with Vite's own HMR
+	 * socket, and the cap on simultaneous rooms (each one holds an island in memory). */
+	path: '/ws',
+	maxRooms: 64,
 };
 
 export const CAMERA = {
@@ -212,6 +292,9 @@ export const COLORS = {
 	trunk: 0x6b4a2f,
 	foliage: 0x2f6b33,
 	rockProp: 0x8a8f96,
+	/** Dirt path: the trodden centre of the track, and the darker, caked earth at its edges. */
+	dirt: 0x8d6b45,
+	dirtDark: 0x63482c,
 };
 
 export const SKY = {
@@ -266,4 +349,55 @@ export const PROPS = {
 	spawnClearance: 35,
 	/** A tree's collision radius, in world units. */
 	treeRadius: 0.7,
+};
+
+export const PATH = {
+	/** Where the loop runs, as a fraction of `WORLD.islandRadius`.
+	 *
+	 * Measured against the terrain rather than guessed: over 40 seeds and 720 directions,
+	 * dry land always reaches at least 0.709 of the radius, and a ring at this value still has
+	 * 100 u of land outside it at its worst spot. The wobble and the track width eat into
+	 * that, leaving a measured worst case of 72 u. So the path is wrapped around the island's
+	 * flank — close enough to read as a path *around* the island, far enough in that it never
+	 * touches the beach or the sea the ribbon fades into. */
+	radius: 0.6,
+	/** The loop is not a circle. Each entry is a sine of `k * angle` — an integer harmonic,
+	 * so the curve closes on itself exactly — with a seeded phase and amplitude, and the
+	 * islands therefore differ in outline and not just in position. Amplitudes are radial
+	 * fractions, and they sum to ~0.05, which is what keeps the loop clear of the water. */
+	wobble: [
+		{ k: 2, amplitude: 0.028 },
+		{ k: 3, amplitude: 0.016 },
+		{ k: 5, amplitude: 0.008 },
+	],
+	/** Width variation along the loop, as harmonics too but normalized shares (they sum to
+	 * 1), so the track is a little narrower in places without ever pinching shut. */
+	widthWobble: [
+		{ k: 3, amplitude: 0.6 },
+		{ k: 5, amplitude: 0.4 },
+	],
+	widthVariation: 0.22,
+	/** Half the width of the trodden dirt, in world units: a track ~6 u across. */
+	halfWidth: 3,
+	/** Outer fraction of the half width that fades into the terrain, so the dirt has no hard
+	 * procedural edge. The fade is carried by the vertex alpha (`COLORS.dirt` ->
+	 * transparent), which is why the path is drawn with a translucent material.
+	 *
+	 * Kept short on purpose: the fade is brown blending over green ground at partial alpha,
+	 * which reads as grey mush, so a wide one turns the track into an airbrushed smear. At
+	 * this value the dirt is solid across its inner 70% and fades over the last 30%. */
+	edgeFade: 0.3,
+	/** How far above the terrain the ribbon is laid, and how much it is crowned along its
+	 * centre. The lift clears the sag of the terrain mesh's linear interpolation (measured
+	 * under 0.05 u across the 6.25 u cells) with plenty to spare, so the path never sinks
+	 * into the ground it was drawn on. */
+	lift: 0.12,
+	crown: 0.06,
+	/** Stations around the loop and samples across it: 768 x 9 vertices, ~12k triangles, one
+	 * draw call. The spacing (~4.9 u along, ~0.75 u across) is finer than the terrain's own
+	 * 6.25 u cells, which is what makes the ribbon follow the ground under it. */
+	segments: 768,
+	crossSegments: 8,
+	/** Strength of the per-vertex colour variation that stops the dirt looking painted on. */
+	colorVariation: 0.1,
 };

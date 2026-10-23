@@ -47,10 +47,15 @@ function createWheel( rubber, hub ) {
 /**
  * Builds the car.
  *
+ * The paint is the only per-owner difference: in a multiplayer room every player gets their
+ * own colour, and this is where it is applied. Everything else is shared geometry.
+ *
+ * @param {object} [options] Options.
+ * @param {number} [options.color] Paint colour of the body, in place of `COLORS.carPaint`.
  * @returns {{ group: Group, chassis: Group, wheels: Group[], steerPivots: Group[],
- *   dispose: () => void }} The car parts.
+ *   suspension: Array<object>, wheelOffsets: Array<object>, dispose: () => void }} The car parts.
  */
-export function buildCar() {
+export function buildCar( options = {} ) {
 
 	const group = new Group();
 	group.name = 'car';
@@ -84,7 +89,9 @@ export function buildCar() {
 
 	}
 
-	const paint = new MeshStandardMaterial( { color: COLORS.carPaint, metalness: 0.5, roughness: 0.32 } );
+	const paint = new MeshStandardMaterial( {
+		color: options.color ?? COLORS.carPaint, metalness: 0.5, roughness: 0.32,
+	} );
 	const trim = new MeshStandardMaterial( { color: COLORS.carTrim, metalness: 0.65, roughness: 0.45 } );
 	const glass = new MeshStandardMaterial( { color: COLORS.carGlass, metalness: 0.2, roughness: 0.08 } );
 	const rubber = new MeshStandardMaterial( { color: COLORS.wheel, metalness: 0.05, roughness: 0.95 } );
@@ -166,10 +173,25 @@ export function buildCar() {
 		wheels,
 		steerPivots,
 		// Local (x, z) of every wheel. The app uses these to sample the terrain under each
-		// wheel and fit the car to the ground instead of hovering over bumps.
+		// wheel and fit the car to the ground instead of hovering over bumps. Local +X is the
+		// car's *left* side (see carPhysics.js), so a positive x is a left-hand wheel.
 		wheelOffsets: wheelPositions.map( ( position ) => ( { x: position.x, z: position.z } ) ),
 		/** Per wheel node plus the height it sits at when fully extended. */
 		suspension,
+		/**
+		 * Repaints the body.
+		 *
+		 * A room hands each player their colour *after* the car exists (the colour is the
+		 * server's to choose), so the paint has to be settable rather than construction-only.
+		 *
+		 * @param {number} color Hex colour.
+		 * @returns {void}
+		 */
+		setPaint( color ) {
+
+			paint.color.setHex( color );
+
+		},
 		dispose() {
 
 			for ( const geometry of geometries ) geometry.dispose();
