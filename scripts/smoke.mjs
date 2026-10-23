@@ -360,6 +360,15 @@ async function main() {
 		'--no-default-browser-check',
 		'--disable-extensions',
 		'--disable-background-networking',
+		// Without these, headless Chrome throttles and "backgrounds" the pages it is not
+		// showing — which is fatal for this script: the frame loop stops advancing, so a
+		// keypress moves the car nowhere near as far as it should, and a page that is still
+		// booting has not connected its socket yet when the multiplayer checks read it. (The
+		// `Page.bringToFront` calls below work around the same limitation for a focused window;
+		// these remove it, so they are no-ops locally and the difference in CI.)
+		'--disable-background-timer-throttling',
+		'--disable-backgrounding-occluded-windows',
+		'--disable-renderer-backgrounding',
 		'--hide-scrollbars',
 		'--mute-audio',
 		'--window-size=1280,800',
